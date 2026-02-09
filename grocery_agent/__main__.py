@@ -4,6 +4,10 @@ import asyncio
 import logging
 import sys
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from grocery_agent.agent import GroceryAgent
 
 
