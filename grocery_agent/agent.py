@@ -356,25 +356,33 @@ class GroceryAgent:
         self._browser_launched = True
 
         print("Navigating to Walmart...")
-        await self.browser.navigate_to_walmart()
+        try:
+            await self.browser.navigate_to_walmart()
 
-        # Wait for login
-        logged_in = await self.browser.wait_for_login(timeout=300)
-        if not logged_in:
-            print(
-                "\nCouldn't detect login automatically. "
-                "You can still continue - I'll try to shop for you."
-            )
-            print("If you need to log in, do so in the browser window.\n")
+            # Wait for login (short timeout in headless mode)
+            logged_in = await self.browser.wait_for_login(timeout=10)
+            if not logged_in:
+                print(
+                    "\nCouldn't detect login automatically. "
+                    "You can still continue - I'll try to shop for you."
+                )
+                print("If you need to log in, do so in the browser window.\n")
+        except Exception as e:
+            print(f"\nCouldn't connect to Walmart: {e}")
+            print("Continuing in offline mode - list and budget features still work.\n")
 
         # Greet the user
-        greeting = await self.llm.chat(
-            "The user has just started a grocery shopping session. "
-            "The browser is open to Walmart. Greet them warmly and ask about "
-            "their shopping needs today - what they want to cook this week, "
-            "any dietary requirements, budget, etc. Keep it conversational."
-        )
-        print(f"\nAssistant: {greeting}\n")
+        try:
+            greeting = await self.llm.chat(
+                "The user has just started a grocery shopping session. "
+                "The browser is open to Walmart. Greet them warmly and ask about "
+                "their shopping needs today - what they want to cook this week, "
+                "any dietary requirements, budget, etc. Keep it conversational."
+            )
+            print(f"\nAssistant: {greeting}\n")
+        except Exception as e:
+            print(f"\nCouldn't connect to Claude API: {e}")
+            print("You can still use offline commands: help, list, budget, nutrition, quit.\n")
 
     async def chat(self, user_input: str) -> str:
         """Process user input and return the agent's response."""

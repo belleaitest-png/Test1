@@ -47,11 +47,10 @@ class WalmartBrowser:
         """Launch a visible Chrome browser for the user to log in."""
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
-            headless=False,
-            channel="chrome",
+            headless=True,
             args=[
-                "--start-maximized",
                 "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
             ],
         )
         self._context = await self._browser.new_context(
