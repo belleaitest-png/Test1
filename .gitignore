@@ -1,0 +1,3 @@
+__pycache__/
+*.pyc
+grocery_agent/saved_lists/
