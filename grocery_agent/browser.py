@@ -36,37 +36,72 @@ logger = logging.getLogger(__name__)
 class WalmartBrowser:
     """Controls a Chrome browser to interact with Walmart's grocery section."""
 
-    def __init__(self, headless: bool = True) -> None:
+    def __init__(
+        self,
+        headless: bool = True,
+        cdp_url: Optional[str] = None,
+    ) -> None:
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._logged_in: bool = False
         self._headless: bool = headless
+        self._cdp_url: Optional[str] = cdp_url
 
     async def launch(self) -> None:
-        """Launch a Chrome browser (headless by default)."""
+        """Launch or connect to a Chrome browser.
+
+        If a CDP URL was provided, connects to an existing Chrome instance
+        (e.g. chrome://inspect or --remote-debugging-port). Otherwise
+        launches a new Chromium browser.
+
+        To use CDP, start Chrome with:
+            google-chrome --remote-debugging-port=9222
+        Then pass --cdp-url=http://localhost:9222 to the agent.
+        """
         self._playwright = await async_playwright().start()
-        launch_args = [
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-        ]
-        if not self._headless:
-            launch_args.append("--start-maximized")
-        self._browser = await self._playwright.chromium.launch(
-            headless=self._headless,
-            args=launch_args,
-        )
-        self._context = await self._browser.new_context(
-            viewport={"width": 1440, "height": 900},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-        )
-        self._page = await self._context.new_page()
-        logger.info("Browser launched successfully")
+
+        if self._cdp_url:
+            # Connect to an existing Chrome via Chrome DevTools Protocol
+            self._browser = await self._playwright.chromium.connect_over_cdp(
+                self._cdp_url, timeout=10000,
+            )
+            # Reuse the first existing context/page if available
+            contexts = self._browser.contexts
+            if contexts:
+                self._context = contexts[0]
+                pages = self._context.pages
+                if pages:
+                    self._page = pages[0]
+                else:
+                    self._page = await self._context.new_page()
+            else:
+                self._context = await self._browser.new_context()
+                self._page = await self._context.new_page()
+            logger.info(f"Connected to existing browser via CDP: {self._cdp_url}")
+        else:
+            # Launch a new browser
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ]
+            if not self._headless:
+                launch_args.append("--start-maximized")
+            self._browser = await self._playwright.chromium.launch(
+                headless=self._headless,
+                args=launch_args,
+            )
+            self._context = await self._browser.new_context(
+                viewport={"width": 1440, "height": 900},
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            )
+            self._page = await self._context.new_page()
+            logger.info("Browser launched successfully")
 
     async def navigate_to_walmart(self) -> None:
         """Navigate to Walmart and wait for the user to log in."""
@@ -497,3 +532,7 @@ class WalmartBrowser:
     @property
     def is_headed(self) -> bool:
         return not self._headless
+
+    @property
+    def is_cdp(self) -> bool:
+        return self._cdp_url is not None

@@ -19,6 +19,18 @@ def _detect_headless() -> bool:
     return not bool(os.environ.get("DISPLAY"))
 
 
+def _get_cdp_url() -> str | None:
+    """Extract --cdp-url=<url> from argv, if provided."""
+    for arg in sys.argv[1:]:
+        if arg.startswith("--cdp-url="):
+            return arg.split("=", 1)[1]
+        if arg == "--cdp-url":
+            idx = sys.argv.index(arg)
+            if idx + 1 < len(sys.argv):
+                return sys.argv[idx + 1]
+    return None
+
+
 def main() -> None:
     """Launch the interactive grocery shopping agent."""
     # Set up logging
@@ -29,6 +41,7 @@ def main() -> None:
     )
 
     headless = _detect_headless()
+    cdp_url = _get_cdp_url()
 
     # Schedule a forced exit to avoid playwright subprocess hangs
     def _force_exit(*_args: object) -> None:
@@ -38,7 +51,7 @@ def main() -> None:
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    agent = GroceryAgent(headless=headless)
+    agent = GroceryAgent(headless=headless, cdp_url=cdp_url)
 
     try:
         loop.run_until_complete(agent.run_interactive())

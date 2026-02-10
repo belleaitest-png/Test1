@@ -332,8 +332,8 @@ class ToolHandler:
 class GroceryAgent:
     """Main agent that runs the grocery shopping experience."""
 
-    def __init__(self, headless: bool = True) -> None:
-        self.browser = WalmartBrowser(headless=headless)
+    def __init__(self, headless: bool = True, cdp_url: str | None = None) -> None:
+        self.browser = WalmartBrowser(headless=headless, cdp_url=cdp_url)
         self.list_manager = GroceryListManager()
         self.budget = BudgetTracker()
         self.llm = GroceryLLM()
@@ -350,20 +350,37 @@ class GroceryAgent:
         print("  Powered by Claude + Walmart Browser Automation")
         print("=" * 60)
         print()
-        print("Launching browser...")
+
+        if self.browser.is_cdp:
+            print("Connecting to existing Chrome browser...")
+        else:
+            print("Launching browser...")
 
         await self.browser.launch()
         self._browser_launched = True
 
-        print("Navigating to Walmart...")
-        try:
-            await self.browser.navigate_to_walmart()
-        except Exception as e:
-            print(f"\nCould not reach Walmart ({e}). Browser is ready for manual navigation.")
+        if self.browser.is_cdp:
+            # When using CDP, the user already has a browser open.
+            # Check if they're already on Walmart / logged in.
+            print("Connected! Checking browser state...")
+            logged_in = await self.browser.wait_for_login(timeout=5)
+            if logged_in:
+                print("Already logged in to Walmart — ready to shop!")
+            else:
+                print("Navigate to walmart.com and log in if you haven't already.")
+                print("I'll start once you're ready.\n")
+                logged_in = await self.browser.wait_for_login(timeout=300)
+        else:
+            print("Navigating to Walmart...")
+            try:
+                await self.browser.navigate_to_walmart()
+            except Exception as e:
+                print(f"\nCould not reach Walmart ({e}). Browser is ready for manual navigation.")
 
-        # Wait for login (short timeout in headless mode)
-        login_timeout = 10 if not self.browser.is_headed else 300
-        logged_in = await self.browser.wait_for_login(timeout=login_timeout)
+            # Wait for login (short timeout in headless mode)
+            login_timeout = 10 if not self.browser.is_headed else 300
+            logged_in = await self.browser.wait_for_login(timeout=login_timeout)
+
         if not logged_in:
             print(
                 "\nCouldn't detect login automatically. "
