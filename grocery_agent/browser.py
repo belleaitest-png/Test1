@@ -36,23 +36,26 @@ logger = logging.getLogger(__name__)
 class WalmartBrowser:
     """Controls a Chrome browser to interact with Walmart's grocery section."""
 
-    def __init__(self) -> None:
+    def __init__(self, headless: bool = True) -> None:
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._logged_in: bool = False
+        self._headless: bool = headless
 
     async def launch(self) -> None:
-        """Launch a visible Chrome browser for the user to log in."""
+        """Launch a Chrome browser (headless by default)."""
         self._playwright = await async_playwright().start()
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+        ]
+        if not self._headless:
+            launch_args.append("--start-maximized")
         self._browser = await self._playwright.chromium.launch(
-            headless=False,
-            channel="chrome",
-            args=[
-                "--start-maximized",
-                "--disable-blink-features=AutomationControlled",
-            ],
+            headless=self._headless,
+            args=launch_args,
         )
         self._context = await self._browser.new_context(
             viewport={"width": 1440, "height": 900},
@@ -69,7 +72,8 @@ class WalmartBrowser:
         """Navigate to Walmart and wait for the user to log in."""
         if not self._page:
             raise RuntimeError("Browser not launched. Call launch() first.")
-        await self._page.goto(WALMART_HOME_URL, timeout=PAGE_LOAD_TIMEOUT)
+        timeout = PAGE_LOAD_TIMEOUT if not self._headless else 15000
+        await self._page.goto(WALMART_HOME_URL, timeout=timeout)
         logger.info("Navigated to Walmart - waiting for user login")
 
     async def wait_for_login(self, timeout: int = 300) -> bool:
@@ -465,11 +469,17 @@ class WalmartBrowser:
         return ""
 
     async def close(self) -> None:
-        """Close the browser."""
-        if self._browser:
-            await self._browser.close()
-        if self._playwright:
-            await self._playwright.stop()
+        """Close the browser and playwright process."""
+        try:
+            if self._browser:
+                await self._browser.close()
+        except Exception as e:
+            logger.warning(f"Error closing browser: {e}")
+        try:
+            if self._playwright:
+                await self._playwright.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping playwright: {e}")
         self._page = None
         self._context = None
         self._browser = None
@@ -483,3 +493,7 @@ class WalmartBrowser:
     @property
     def is_logged_in(self) -> bool:
         return self._logged_in
+
+    @property
+    def is_headed(self) -> bool:
+        return not self._headless

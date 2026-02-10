@@ -332,8 +332,8 @@ class ToolHandler:
 class GroceryAgent:
     """Main agent that runs the grocery shopping experience."""
 
-    def __init__(self) -> None:
-        self.browser = WalmartBrowser()
+    def __init__(self, headless: bool = True) -> None:
+        self.browser = WalmartBrowser(headless=headless)
         self.list_manager = GroceryListManager()
         self.budget = BudgetTracker()
         self.llm = GroceryLLM()
@@ -356,25 +356,34 @@ class GroceryAgent:
         self._browser_launched = True
 
         print("Navigating to Walmart...")
-        await self.browser.navigate_to_walmart()
+        try:
+            await self.browser.navigate_to_walmart()
+        except Exception as e:
+            print(f"\nCould not reach Walmart ({e}). Browser is ready for manual navigation.")
 
-        # Wait for login
-        logged_in = await self.browser.wait_for_login(timeout=300)
+        # Wait for login (short timeout in headless mode)
+        login_timeout = 10 if not self.browser.is_headed else 300
+        logged_in = await self.browser.wait_for_login(timeout=login_timeout)
         if not logged_in:
             print(
                 "\nCouldn't detect login automatically. "
                 "You can still continue - I'll try to shop for you."
             )
-            print("If you need to log in, do so in the browser window.\n")
+            if self.browser.is_headed:
+                print("If you need to log in, do so in the browser window.\n")
 
         # Greet the user
-        greeting = await self.llm.chat(
-            "The user has just started a grocery shopping session. "
-            "The browser is open to Walmart. Greet them warmly and ask about "
-            "their shopping needs today - what they want to cook this week, "
-            "any dietary requirements, budget, etc. Keep it conversational."
-        )
-        print(f"\nAssistant: {greeting}\n")
+        try:
+            greeting = await self.llm.chat(
+                "The user has just started a grocery shopping session. "
+                "The browser is open to Walmart. Greet them warmly and ask about "
+                "their shopping needs today - what they want to cook this week, "
+                "any dietary requirements, budget, etc. Keep it conversational."
+            )
+            print(f"\nAssistant: {greeting}\n")
+        except Exception as e:
+            print(f"\nCould not connect to Claude API: {e}")
+            print("You can still use local commands: list, budget, nutrition, help\n")
 
     async def chat(self, user_input: str) -> str:
         """Process user input and return the agent's response."""
@@ -436,8 +445,16 @@ class GroceryAgent:
     async def shutdown(self) -> None:
         """Clean up resources."""
         if self._browser_launched:
-            await self.browser.close()
-        self.budget.save_session()
+            try:
+                await asyncio.wait_for(self.browser.close(), timeout=3)
+            except asyncio.TimeoutError:
+                logger.warning("Browser close timed out, forcing exit")
+            except Exception as e:
+                logger.warning(f"Browser cleanup issue: {e}")
+        try:
+            self.budget.save_session()
+        except Exception:
+            pass
 
     @staticmethod
     def _print_help() -> None:
