@@ -1,4 +1,4 @@
-"""Main orchestrator that wires together browser, LLM, lists, nutrition, and budget.
+"""Main orchestrator that wires together the Kroger API, LLM, lists, nutrition, and budget.
 
 This module implements the ToolHandler that the LLM delegates tool calls to,
 and the main Agent class that runs the conversational shopping loop.
@@ -6,15 +6,14 @@ and the main Agent class that runs the conversational shopping loop.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any
 
-from grocery_agent.browser import WalmartBrowser
 from grocery_agent.budget import BudgetTracker
 from grocery_agent.grocery_list import GroceryListManager
+from grocery_agent.kroger import KrogerClient
 from grocery_agent.llm import GroceryLLM
-from grocery_agent.models import CartItem, GroceryItem, WalmartProduct
+from grocery_agent.models import CartItem, GroceryItem, KrogerProduct
 from grocery_agent.nutrition import format_health_summary, score_items
 
 logger = logging.getLogger(__name__)
@@ -28,14 +27,14 @@ class ToolHandler:
 
     def __init__(
         self,
-        browser: WalmartBrowser,
+        kroger: KrogerClient,
         list_manager: GroceryListManager,
         budget: BudgetTracker,
     ) -> None:
-        self.browser = browser
+        self.kroger = kroger
         self.lists = list_manager
         self.budget = budget
-        self._last_search_results: list[WalmartProduct] = []
+        self._last_search_results: list[KrogerProduct] = []
         self._last_search_query: str = ""
 
     async def handle_add_to_grocery_list(
@@ -83,33 +82,35 @@ class ToolHandler:
             "dietary_notes": gl.dietary_notes,
         }
 
-    async def handle_search_walmart(
+    async def handle_search_kroger(
         self, query: str, max_results: int = 5
     ) -> dict:
-        """Search Walmart for products."""
-        if not self.browser.is_ready:
-            return {"error": "Browser not ready. Please launch the browser first."}
+        """Search Kroger for products."""
+        if not self.kroger.is_configured:
+            return {
+                "error": "Kroger API credentials not configured. "
+                "Set KROGER_CLIENT_ID and KROGER_CLIENT_SECRET env vars."
+            }
 
         try:
-            results = await self.browser.search_products(query, max_results)
+            results = self.kroger.search_products(query, max_results)
             self._last_search_results = results
             self._last_search_query = query
 
             products = []
             for i, p in enumerate(results):
-                product_info = {
+                product_info: dict[str, Any] = {
                     "index": i,
                     "name": p.name,
-                    "price": p.price,
+                    "brand": p.brand,
+                    "price": p.effective_price,
                     "on_sale": p.on_sale,
                     "in_stock": p.in_stock,
                 }
                 if p.on_sale:
-                    product_info["original_price"] = p.original_price
+                    product_info["regular_price"] = p.price
+                    product_info["promo_price"] = p.promo_price
                     product_info["discount"] = p.discount_pct
-                    product_info["sale_badge"] = p.sale_badge
-                if p.unit_price:
-                    product_info["unit_price"] = p.unit_price
                 products.append(product_info)
 
             sale_items = [p for p in results if p.on_sale]
@@ -119,6 +120,7 @@ class ToolHandler:
                 "result_count": len(results),
                 "products": products,
                 "sale_count": len(sale_items),
+                "store": self.kroger.location_id or "national (set a store for local prices)",
             }
         except Exception as e:
             return {"error": f"Search failed: {str(e)}"}
@@ -127,16 +129,16 @@ class ToolHandler:
         self, item: str, alternatives: list[str] | None = None
     ) -> dict:
         """Compare prices between an item and alternatives."""
-        if not self.browser.is_ready:
-            return {"error": "Browser not ready."}
+        if not self.kroger.is_configured:
+            return {"error": "Kroger API credentials not configured."}
 
         try:
-            comparison = await self.browser.search_and_compare(item, alternatives)
+            comparison = self.kroger.compare_products(item, alternatives)
 
             result: dict[str, Any] = {
                 "primary_item": item,
                 "primary_results": [
-                    {"name": p.name, "price": p.price, "on_sale": p.on_sale}
+                    {"name": p.name, "price": p.effective_price, "on_sale": p.on_sale}
                     for p in comparison["primary_results"][:3]
                 ],
                 "alternatives": {},
@@ -145,18 +147,18 @@ class ToolHandler:
 
             for alt_name, alt_products in comparison["alternatives"].items():
                 result["alternatives"][alt_name] = [
-                    {"name": p.name, "price": p.price, "on_sale": p.on_sale}
+                    {"name": p.name, "price": p.effective_price, "on_sale": p.on_sale}
                     for p in alt_products[:3]
                 ]
 
-            for suggestion in comparison["sale_alternatives"]:
+            for suggestion in comparison["sale_items"]:
                 result["sale_suggestions"].append(suggestion["suggestion"])
 
             if comparison["best_deal"]:
                 bd = comparison["best_deal"]
                 result["best_deal"] = {
                     "name": bd.name,
-                    "price": bd.price,
+                    "price": bd.effective_price,
                     "on_sale": bd.on_sale,
                 }
 
@@ -164,16 +166,15 @@ class ToolHandler:
         except Exception as e:
             return {"error": f"Comparison failed: {str(e)}"}
 
-    async def handle_add_to_walmart_cart(
+    async def handle_add_to_cart(
         self, search_query: str, product_index: int = 0
     ) -> dict:
-        """Search for and add a product to the Walmart cart."""
-        if not self.browser.is_ready:
-            return {"error": "Browser not ready."}
+        """Search for and track a product (add to budget tracking)."""
+        if not self.kroger.is_configured:
+            return {"error": "Kroger API credentials not configured."}
 
         try:
-            # Search first
-            results = await self.browser.search_products(search_query, max_results=5)
+            results = self.kroger.search_products(search_query, max_results=5)
             if not results:
                 return {"error": f"No results found for '{search_query}'"}
 
@@ -182,38 +183,47 @@ class ToolHandler:
 
             product = results[product_index]
 
-            # Try adding from search results page first
-            success = await self.browser.add_to_cart_from_search(product_index)
+            grocery_item = GroceryItem(name=product.name)
+            cart_item = CartItem(
+                grocery_item=grocery_item,
+                product=product,
+            )
+            budget_status = self.budget.add_item(cart_item)
 
-            if not success:
-                # Fall back to navigating to product page
-                success = await self.browser.add_to_cart(product)
-
-            if success:
-                # Track in budget
-                grocery_item = GroceryItem(name=product.name)
-                cart_item = CartItem(
-                    grocery_item=grocery_item,
-                    walmart_product=product,
-                )
-                budget_status = self.budget.add_item(cart_item)
-
-                return {
-                    "success": True,
-                    "product": product.name,
-                    "price": product.price,
-                    "on_sale": product.on_sale,
-                    "budget_status": budget_status,
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": f"Could not add '{product.name}' to cart. "
-                    "The page layout may have changed.",
-                    "product": product.name,
-                }
+            return {
+                "success": True,
+                "product": product.name,
+                "price": product.effective_price,
+                "on_sale": product.on_sale,
+                "budget_status": budget_status,
+            }
         except Exception as e:
             return {"error": f"Failed to add to cart: {str(e)}"}
+
+    async def handle_set_store(
+        self, zip_code: str, radius_miles: int = 10
+    ) -> dict:
+        """Find nearby Kroger stores and set the closest one."""
+        if not self.kroger.is_configured:
+            return {"error": "Kroger API credentials not configured."}
+
+        try:
+            stores = self.kroger.search_locations(
+                zip_code=zip_code, radius_miles=radius_miles, limit=5
+            )
+            if not stores:
+                return {"error": f"No Kroger stores found near {zip_code}"}
+
+            # Auto-select the first/closest store
+            self.kroger.set_location(stores[0]["locationId"])
+
+            return {
+                "selected_store": stores[0],
+                "nearby_stores": stores,
+                "message": f"Set store to {stores[0]['name']} ({stores[0]['address']})",
+            }
+        except Exception as e:
+            return {"error": f"Store search failed: {str(e)}"}
 
     async def handle_check_nutrition(self) -> dict:
         """Check nutrition score for current list."""
@@ -271,16 +281,6 @@ class ToolHandler:
         saved = self.lists.list_saved()
         return {"saved_lists": saved, "count": len(saved)}
 
-    async def handle_get_cart_total(self) -> dict:
-        """Get current Walmart cart total."""
-        if not self.browser.is_ready:
-            return {"error": "Browser not ready."}
-
-        total = await self.browser.get_cart_total()
-        if total is not None:
-            return {"cart_total": total}
-        return {"error": "Could not read cart total"}
-
     async def handle_create_meal_plan(
         self,
         days: int = 7,
@@ -303,21 +303,22 @@ class ToolHandler:
         }
 
     async def handle_start_shopping(self, check_sales: bool = True) -> dict:
-        """Start shopping - search for each list item on Walmart."""
+        """Start shopping - search for each list item on Kroger."""
         items = self.lists.get_items()
         if not items:
             return {"error": "No items in grocery list. Add items first!"}
 
-        if not self.browser.is_ready:
-            return {"error": "Browser not ready. Please launch browser first."}
+        if not self.kroger.is_configured:
+            return {"error": "Kroger API credentials not configured."}
 
         return {
             "action": "shopping_started",
             "items_to_shop": [item.display() for item in items],
             "item_count": len(items),
             "check_sales": check_sales,
+            "store": self.kroger.location_id or "national",
             "instruction": (
-                "For each item, search Walmart, show the user the best options "
+                "For each item, search Kroger, show the user the best options "
                 "(including any sale items), and ask which one to add to cart. "
                 "If check_sales is True, also search for similar/alternative items "
                 "that might be on sale."
@@ -332,70 +333,44 @@ class ToolHandler:
 class GroceryAgent:
     """Main agent that runs the grocery shopping experience."""
 
-    def __init__(self, headless: bool = True, cdp_url: str | None = None) -> None:
-        self.browser = WalmartBrowser(headless=headless, cdp_url=cdp_url)
+    def __init__(self) -> None:
+        self.kroger = KrogerClient()
         self.list_manager = GroceryListManager()
         self.budget = BudgetTracker()
         self.llm = GroceryLLM()
         self.tool_handler = ToolHandler(
-            self.browser, self.list_manager, self.budget
+            self.kroger, self.list_manager, self.budget
         )
         self.llm.set_tool_handler(self.tool_handler)
-        self._browser_launched = False
 
     async def start(self) -> None:
-        """Launch the agent: open browser, navigate to Walmart."""
+        """Initialize the agent and greet the user."""
         print("=" * 60)
         print("  Grocery Shopping Agent")
-        print("  Powered by Claude + Walmart Browser Automation")
+        print("  Powered by Claude + Kroger API")
         print("=" * 60)
         print()
 
-        if self.browser.is_cdp:
-            print("Connecting to existing Chrome browser...")
+        if self.kroger.is_configured:
+            print("Kroger API: connected")
         else:
-            print("Launching browser...")
-
-        await self.browser.launch()
-        self._browser_launched = True
-
-        if self.browser.is_cdp:
-            # When using CDP, the user already has a browser open.
-            # Check if they're already on Walmart / logged in.
-            print("Connected! Checking browser state...")
-            logged_in = await self.browser.wait_for_login(timeout=5)
-            if logged_in:
-                print("Already logged in to Walmart — ready to shop!")
-            else:
-                print("Navigate to walmart.com and log in if you haven't already.")
-                print("I'll start once you're ready.\n")
-                logged_in = await self.browser.wait_for_login(timeout=300)
-        else:
-            print("Navigating to Walmart...")
-            try:
-                await self.browser.navigate_to_walmart()
-            except Exception as e:
-                print(f"\nCould not reach Walmart ({e}). Browser is ready for manual navigation.")
-
-            # Wait for login (short timeout in headless mode)
-            login_timeout = 10 if not self.browser.is_headed else 300
-            logged_in = await self.browser.wait_for_login(timeout=login_timeout)
-
-        if not logged_in:
-            print(
-                "\nCouldn't detect login automatically. "
-                "You can still continue - I'll try to shop for you."
-            )
-            if self.browser.is_headed:
-                print("If you need to log in, do so in the browser window.\n")
+            print("Kroger API: not configured")
+            print("  Set KROGER_CLIENT_ID and KROGER_CLIENT_SECRET to enable shopping.")
+            print("  Register free at https://developer.kroger.com\n")
 
         # Greet the user
         try:
             greeting = await self.llm.chat(
                 "The user has just started a grocery shopping session. "
-                "The browser is open to Walmart. Greet them warmly and ask about "
-                "their shopping needs today - what they want to cook this week, "
-                "any dietary requirements, budget, etc. Keep it conversational."
+                "Greet them warmly and ask about their shopping needs today - "
+                "what they want to cook this week, any dietary requirements, "
+                "budget, etc. Keep it conversational. "
+                + (
+                    "The Kroger API is connected and ready for product searches."
+                    if self.kroger.is_configured
+                    else "Note: Kroger API credentials aren't set yet, but you "
+                    "can still help with meal planning, list management, and nutrition."
+                )
             )
             print(f"\nAssistant: {greeting}\n")
         except Exception as e:
@@ -446,11 +421,6 @@ class GroceryAgent:
                 print(f"\n{format_health_summary(items)}\n")
                 continue
 
-            if user_input.lower() == "screenshot":
-                path = await self.browser.screenshot()
-                print(f"\nScreenshot saved to: {path}\n")
-                continue
-
             # Send to LLM
             try:
                 response = await self.llm.chat(user_input)
@@ -461,13 +431,7 @@ class GroceryAgent:
 
     async def shutdown(self) -> None:
         """Clean up resources."""
-        if self._browser_launched:
-            try:
-                await asyncio.wait_for(self.browser.close(), timeout=3)
-            except asyncio.TimeoutError:
-                logger.warning("Browser close timed out, forcing exit")
-            except Exception as e:
-                logger.warning(f"Browser cleanup issue: {e}")
+        self.kroger.close()
         try:
             self.budget.save_session()
         except Exception:
@@ -481,14 +445,15 @@ Commands:
   list        - Show current grocery list
   budget      - Show budget status
   nutrition   - Show nutrition score
-  screenshot  - Save browser screenshot
   quit        - Exit and save session
 
 Or just talk naturally! Examples:
   "I want to meal prep for the week, mostly Mediterranean"
   "Add 2 lbs of chicken breast and a bag of brown rice"
+  "Search Kroger for organic eggs"
   "What's on sale that's similar to salmon?"
   "Set my budget to $150"
-  "Start shopping - add everything to my cart"
+  "Find a Kroger near 90210"
+  "Start shopping - find prices for everything on my list"
   "Load my saved 'weekly essentials' list"
 """)

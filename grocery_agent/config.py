@@ -16,16 +16,9 @@ LISTS_DIR = DATA_DIR
 # Ensure data directory exists
 DATA_DIR.mkdir(exist_ok=True)
 
-# Browser settings
-WALMART_GROCERY_URL = "https://www.walmart.com/browse/food/976759"
-WALMART_SEARCH_URL = "https://www.walmart.com/search?q={query}&cat_id=976759"
-WALMART_CART_URL = "https://www.walmart.com/cart"
-WALMART_HOME_URL = "https://www.walmart.com"
-
-# Timeouts (milliseconds)
-PAGE_LOAD_TIMEOUT = 30000
-ELEMENT_TIMEOUT = 10000
-SEARCH_RESULT_TIMEOUT = 15000
+# Kroger API settings
+KROGER_BASE_URL = "https://api.kroger.com/v1"
+KROGER_API_TIMEOUT = 15  # seconds
 
 # LLM settings
 DEFAULT_MODEL = "claude-sonnet-4-5-20250929"

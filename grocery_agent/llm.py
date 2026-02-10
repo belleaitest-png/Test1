@@ -1,7 +1,7 @@
 """LLM agent powered by Claude for natural language grocery assistance.
 
 Handles conversation, meal planning, dietary advice, and coordinates
-the browser automation and list management via tool use.
+the Kroger API and list management via tool use.
 """
 
 from __future__ import annotations
@@ -43,8 +43,9 @@ You are a friendly, knowledgeable grocery shopping assistant. You help users:
 ## Tool Usage
 You have access to tools to:
 - Manage the grocery list (add/remove items, save/load lists)
-- Search Walmart for products and prices
-- Add items to the Walmart cart via browser
+- Search Kroger for products and prices (via API)
+- Find nearby Kroger-family stores by zip code
+- Compare prices across items and alternatives
 - Check nutrition scores
 - Track budget
 
@@ -111,8 +112,8 @@ TOOLS = [
         },
     },
     {
-        "name": "search_walmart",
-        "description": "Search for a product on Walmart to check prices and availability. Returns product names, prices, and sale status.",
+        "name": "search_kroger",
+        "description": "Search for a product on Kroger to check prices and availability. Returns product names, prices, brands, and sale status.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -149,8 +150,8 @@ TOOLS = [
         },
     },
     {
-        "name": "add_to_walmart_cart",
-        "description": "Add a specific product to the Walmart cart via browser automation. Use after searching and confirming with the user.",
+        "name": "add_to_cart",
+        "description": "Search for a product on Kroger and add it to the cart (budget tracking). Use after confirming with the user.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -161,10 +162,29 @@ TOOLS = [
                 },
                 "search_query": {
                     "type": "string",
-                    "description": "Search query to find the product first",
+                    "description": "Search query to find the product",
                 },
             },
             "required": ["search_query"],
+        },
+    },
+    {
+        "name": "set_store",
+        "description": "Find nearby Kroger-family stores (Kroger, Ralphs, Fred Meyer, etc.) by zip code and set the closest one for price lookups.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "zip_code": {
+                    "type": "string",
+                    "description": "Zip code to search near",
+                },
+                "radius_miles": {
+                    "type": "integer",
+                    "description": "Search radius in miles",
+                    "default": 10,
+                },
+            },
+            "required": ["zip_code"],
         },
     },
     {
@@ -228,14 +248,6 @@ TOOLS = [
     {
         "name": "show_saved_lists",
         "description": "Show all saved grocery lists.",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    {
-        "name": "get_cart_total",
-        "description": "Check the current Walmart cart total from the browser.",
         "input_schema": {
             "type": "object",
             "properties": {},

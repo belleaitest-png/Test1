@@ -53,45 +53,55 @@ class GroceryItem:
 
 
 @dataclass
-class WalmartProduct:
-    """A product found on Walmart's website."""
+class KrogerProduct:
+    """A product found via the Kroger API."""
+    product_id: str
     name: str
     price: float
-    unit_price: str = ""
-    image_url: str = ""
-    product_url: str = ""
+    upc: str = ""
+    brand: str = ""
+    promo_price: Optional[float] = None
     on_sale: bool = False
-    original_price: Optional[float] = None
-    sale_badge: str = ""
     in_stock: bool = True
-    seller: str = "Walmart"
+    image_url: str = ""
+
+    @property
+    def effective_price(self) -> float:
+        """Current price (promo if on sale, otherwise regular)."""
+        if self.on_sale and self.promo_price is not None:
+            return self.promo_price
+        return self.price
 
     @property
     def discount_pct(self) -> Optional[float]:
-        if self.on_sale and self.original_price and self.original_price > 0:
-            return round((1 - self.price / self.original_price) * 100, 1)
+        if self.on_sale and self.promo_price is not None and self.price > 0:
+            return round((1 - self.promo_price / self.price) * 100, 1)
         return None
 
+    def display_price(self) -> str:
+        if self.on_sale and self.promo_price is not None:
+            return f"${self.promo_price:.2f} (was ${self.price:.2f}, {self.discount_pct}% off)"
+        if self.price > 0:
+            return f"${self.price:.2f}"
+        return "Price not available"
+
     def display(self) -> str:
-        price_str = f"${self.price:.2f}"
-        if self.on_sale and self.original_price:
-            price_str = f"${self.price:.2f} (was ${self.original_price:.2f}, {self.discount_pct}% off)"
-        if self.sale_badge:
-            price_str += f" [{self.sale_badge}]"
-        return f"{self.name} - {price_str}"
+        brand = f" ({self.brand})" if self.brand else ""
+        stock = "" if self.in_stock else " [Out of Stock]"
+        return f"{self.name}{brand} - {self.display_price()}{stock}"
 
 
 @dataclass
 class CartItem:
-    """An item added to the Walmart cart."""
+    """An item added to the cart."""
     grocery_item: GroceryItem
-    walmart_product: WalmartProduct
+    product: KrogerProduct
     quantity: int = 1
     added_at: datetime = field(default_factory=datetime.now)
 
     @property
     def total_price(self) -> float:
-        return self.walmart_product.price * self.quantity
+        return self.product.effective_price * self.quantity
 
 
 @dataclass

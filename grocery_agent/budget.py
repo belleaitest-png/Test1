@@ -103,7 +103,7 @@ class BudgetTracker:
             "items": [
                 {
                     "name": i.grocery_item.name,
-                    "price": i.walmart_product.price,
+                    "price": i.product.effective_price,
                     "quantity": i.quantity,
                 }
                 for i in self._items

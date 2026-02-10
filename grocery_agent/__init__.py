@@ -1,4 +1,4 @@
-"""Grocery Shopping Agent - AI-powered Walmart grocery shopping assistant."""
+"""Grocery Shopping Agent - AI-powered grocery shopping assistant using the Kroger API."""
 
 from grocery_agent.agent import GroceryAgent
 
