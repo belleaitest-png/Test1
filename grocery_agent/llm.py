@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Optional
 
 import anthropic
@@ -300,7 +301,9 @@ class GroceryLLM:
     """LLM-powered conversational grocery assistant."""
 
     def __init__(self, model: str = DEFAULT_MODEL) -> None:
-        self.client = anthropic.Anthropic()
+        # Accept ANTHROPIC_API_KEY or ANTHROPIC_API as the env var name
+        api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API")
+        self.client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
         self.model = model
         self.messages: list[dict] = []
         self._tool_handler: Optional[Any] = None
