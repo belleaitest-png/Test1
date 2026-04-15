@@ -33,3 +33,6 @@ Thumbs.db
 # Saved data (keep the directory but not user data)
 grocery_agent/saved_lists/*.json
 !grocery_agent/saved_lists/.gitkeep
+
+# Generated visuals
+instagram_agent/output/*.png
